@@ -1,0 +1,257 @@
+---
+title: "Homework 6"
+author: Suhani Patel 
+date: 2021-11-23
+output:
+  html_document:
+    toc: TRUE
+    toc_float: TRUE
+    code_folding: hide
+    theme: yeti
+    highlight: haddock
+---
+
+```{r setup, include=FALSE} 
+knitr::opts_chunk$set(warning = FALSE, message = FALSE) 
+```
+
+```{r}
+library(tidyverse)
+library(MASS)
+library(modelr)
+library(mgcv)
+```
+
+# Problem 1
+*****
+
+### Load and Clean
+```{r}
+birthweight = read_csv(file = "./data/birthweight.csv", na = c("")) %>% 
+  janitor::clean_names() %>% 
+    mutate(
+      babysex = factor(babysex),
+      frace = factor(frace),
+      malform = factor(malform),
+      mrace = factor(mrace))
+```
+
+### Model Building
+
+#### Process: Backward Selection
+Starting with all variables in the model, we will remove one variable at a time with the highest AIC until we have the resulting best final model. To do this, we will use stepAIC in the MASS package. 
+
+```{r}
+# Fit the full model 
+full.model <- lm(bwt ~., data = birthweight)
+
+# Stepwise regression model
+step.model = stepAIC(full.model, direction = "backward", 
+                      trace = FALSE) 
+```
+
+### Plot of Residuals 
+
+```{r}
+plot = birthweight %>% 
+  modelr::add_residuals(step.model) %>% 
+  modelr::add_predictions(step.model) %>% 
+  ggplot(aes(x = pred, y = resid)) + geom_violin(aes(fill = pred), color = "blue", alpha = .5) + 
+  labs(
+    title = "Plot of Model Residuals Aginst Fitted Values",
+    x = "Fitted Values",
+    y = "Residuals") + 
+  theme_bw()  + 
+  viridis::scale_color_viridis() +
+  theme(legend.position="none")  
+
+plot
+
+```
+
+
+### Comparison of Models
+
+```{r}
+model_2 = lm(bwt ~ blength + gaweeks, data = birthweight)
+
+model_2 = model_2 %>% 
+  broom::tidy() 
+```
+
+```{r}
+model_3 = lm(bwt ~ bhead + blength + babysex + bhead*blength + bhead*babysex + blength*babysex + bhead*blength*babysex, data = birthweight)
+
+model_3 = model_3 %>% 
+  broom::tidy()  
+```
+
+### Cross-validated prediction error
+
+```{r}
+cv_df =
+  crossv_mc(birthweight, 100) 
+```
+
+```{r}
+cv_df %>% pull(train) %>% .[[1]] %>% as_tibble
+```
+
+```{r}
+cv_df %>% pull(test) %>% .[[1]] %>% as_tibble
+```
+
+```{r}
+cv_df =
+  cv_df %>% 
+  mutate(
+    train = map(train, as_tibble),
+    test = map(test, as_tibble))
+```
+
+```{r}
+cv_df2 = cv_df %>% 
+  mutate(
+    mod_1  = map(train, ~lm(bwt ~ bhead + blength + mrace + delwt + smoken + gaweeks + ppwt + mrace + mheight + babysex + parity + fincome + mrace, data = .x)),
+    mod_2  = map(train, ~lm(bwt ~ blength + gaweeks, data = .x)),
+    mod_3  = map(train, ~lm(bwt ~ bhead + blength + babysex + bhead*blength + bhead*babysex + blength*babysex + bhead*blength*babysex, data = .x))) %>% 
+  mutate(
+    rmse_1 = map2_dbl(mod_1, test, ~rmse(model = .x, data = .y)),
+    rmse_2 = map2_dbl(mod_2, test, ~rmse(model = .x, data = .y)),
+    rmse_3 = map2_dbl(mod_3, test, ~rmse(model = .x, data = .y)))
+```
+
+### Plot Comparing Models
+
+```{r}
+cv_df3 =  cv_df2 %>% 
+  dplyr::select(rmse_1, rmse_2, rmse_3) %>% 
+   pivot_longer(
+     everything(),
+     names_to = "model", 
+     values_to = "rmse",
+     names_prefix = "rmse_") %>% 
+  mutate(model = fct_inorder(model)) %>% 
+  ggplot(aes(x = model, y = rmse)) + geom_violin(aes(fill = model), color = "blue", alpha = .5) + 
+  labs(
+    title = "Comparison of Models Residuals Aginst Fitted Values",
+    x = "Model",
+    y = "Root Mean Square Error (RMSE)") + 
+  theme_bw()  + 
+  viridis::scale_color_viridis() +
+  theme(legend.position="none")  
+
+cv_df3
+```
+
+According to the plot of residuals, the model I created that used backward selection comparing AIC values has the lowest residuals followed by the model with the interaction between head circumference, length, and sex. The model with the highest residuals is the model with the main effects of length at birth and gestational age as predictors. 
+
+# Problem 2
+*****
+
+### Data Upload 
+
+```{r}
+weather_df = 
+  rnoaa::meteo_pull_monitors(
+    c("USW00094728"),
+    var = c("PRCP", "TMIN", "TMAX"), 
+    date_min = "2017-01-01",
+    date_max = "2017-12-31") %>%
+  mutate(
+    name = recode(id, USW00094728 = "CentralPark_NY"),
+    tmin = tmin / 10,
+    tmax = tmax / 10) 
+```
+
+### Obtaining Log of Beta Estimates 
+
+```{r}
+results1 = weather_df %>% 
+  modelr::bootstrap(n = 5000, id = "strap_number") %>% 
+  mutate(
+    models = map(.x = strap, ~lm(tmax ~ tmin, data = .x)),
+    results = map(models, broom::tidy)) %>% 
+  dplyr::select(strap_number, results) %>% 
+  unnest(results) %>% 
+  pivot_wider(names_from = term, values_from = c(estimate, std.error, statistic, p.value)) %>% 
+  janitor::clean_names() %>% 
+  mutate(
+    log_estimates = log(estimate_intercept*estimate_tmin)) 
+```
+
+### Plot of Distribution of Log of Estiamtes
+
+```{r}
+plot_log_estimates = results1 %>% 
+  ggplot(aes(x = log_estimates)) + geom_density() + 
+  labs(
+    title = "Distribution of the Log of Betas Multiplied",
+    x = "Log of Betas Multiplied",
+    y = "Density") + 
+  theme_bw()  + 
+  viridis::scale_color_viridis() +
+  theme(legend.position="none")  
+
+plot_log_estimates
+```
+
+The plots shows that the vast majority of samples taken provide an estimate for the log of the betas multiplied of around 2.15. The plot depicts a symmetrical distribution centered around 2.15. 
+
+### Obtaining R-Squares
+
+```{r}
+results2 = weather_df %>% 
+  modelr::bootstrap(n = 5000, id = "strap_number") %>% 
+  mutate(
+    models = map(.x = strap, ~lm(tmax ~ tmin, data = .x)),
+    results = map(models, broom::glance)) %>% 
+  dplyr::select(strap_number, results) %>% 
+  unnest(results) %>% 
+  janitor::clean_names() 
+```
+
+### Plot of Distribution of R Squared 
+
+```{r}
+plot_r_squared = results2 %>% 
+  ggplot(aes(x = r_squared)) + geom_density() + 
+  labs(
+    title = "Distribution of the R Squared",
+    x = "R Squared",
+    y = "Density") + 
+  theme_bw()  + 
+  viridis::scale_color_viridis() +
+  theme(legend.position="none")  
+
+plot_r_squared
+```
+
+The plot shows that the majoirty of R-squared values taken from samples are around 0.915. The histogram is somewhat symmetrical centered around 0.195. 
+
+### Confidence Intervals
+
+#### CI for Log of Beta's Multiplied 
+
+```{r}
+CI_log_estimates = results1 %>%
+    summarize(
+    ci_lower = quantile(log_estimates, 0.025), 
+    ci_upper = quantile(log_estimates, 0.975))
+
+knitr::kable((CI_log_estimates[, 1:2]), "simple")
+```
+
+#### CI for R Squared
+
+```{r}
+CI_r_squared = results2 %>%
+    summarize(
+    ci_lower = quantile(r_squared, 0.025), 
+    ci_upper = quantile(r_squared, 0.975))
+
+knitr::kable((CI_r_squared[, 1:2]), "simple")
+```
+
+
+
